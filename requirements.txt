@@ -2,3 +2,4 @@ streamlit
 pymupdf
 python-docx
 python-dotenv
+trafilatura
