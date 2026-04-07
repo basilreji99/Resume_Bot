@@ -3,3 +3,6 @@ pymupdf
 python-docx
 python-dotenv
 trafilatura
+sentence-transformers
+faiss-cpu
+numpy

@@ -1,6 +1,7 @@
 import streamlit as st
 from app.parser import extract_text
 from app.scraper import scrape_url, clean_pasted_text
+from app.vector_store import build_vector_store
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
@@ -131,12 +132,19 @@ if submit:
                 raw_text = clean_pasted_text(pasted_text)
                 source_label = paste_type
 
+        # Build the vector store from the extracted text
+        with st.spinner("Building vector index..."):
+            index, chunks = build_vector_store(raw_text)
+
         # Store everything in session_state for use in later phases
         st.session_state["document_text"] = raw_text
         st.session_state["document_name"] = source_label
         st.session_state["document_ready"] = True
+        st.session_state["faiss_index"] = index
+        st.session_state["chunks"] = chunks
 
         st.success(f"✅ Ready! Source loaded: **{source_label}**")
+        st.caption(f"Document split into {len(chunks)} searchable chunks.")
 
         # Debug preview — will be removed in a later phase
         with st.expander("Preview extracted text (debug view)"):
