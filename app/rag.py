@@ -2,6 +2,7 @@ import os
 from groq import Groq
 from dotenv import load_dotenv
 from app.vector_store import search
+from app.guardrails import check_query
 
 load_dotenv()  # reads your .env file and loads GROQ_API_KEY into os.environ
 
@@ -38,22 +39,6 @@ respond: "I can only answer questions about the information in this document."
 """
 
 
-# ── Guardrail: off-topic detection via LLM ───────────────────
-# We no longer do word-matching here. Word-matching is too brittle:
-# "what is his name?" fails because "name" doesn't appear in the
-# resume — only the actual name does. "education background?" fails
-# because resumes say "B.Sc Computer Science" not "education."
-#
-# Instead, we let the system prompt handle guardrails entirely.
-# The LLM is instructed to refuse off-topic questions itself.
-# This is more accurate and handles phrasing variations naturally.
-#
-# We keep this function as a lightweight pre-check only for
-# completely empty or nonsensical inputs.
-def _is_valid_query(query: str) -> bool:
-    """Returns False only for blank or absurdly short inputs."""
-    return len(query.strip()) >= 3
-
 
 # ── Build context string ──────────────────────────────────────
 def _build_context(chunks: list[str]) -> str:
@@ -89,12 +74,12 @@ def chat(
         updated_history : chat_history with the new turn appended
     """
 
-    # Step 1: Basic input validation
-    if not _is_valid_query(user_message):
-        reply = "Please enter a valid question."
+    # Step 1: Semantic guardrail — check query is relevant to document
+    passed, reason = check_query(user_message, " ".join(chunks))
+    if not passed:
         chat_history.append({"role": "user", "content": user_message})
-        chat_history.append({"role": "assistant", "content": reply})
-        return reply, chat_history
+        chat_history.append({"role": "assistant", "content": reason})
+        return reason, chat_history
 
     # Step 2: Retrieve the most relevant chunks for this question
     relevant_chunks = search(user_message, faiss_index, chunks, top_k=4)
