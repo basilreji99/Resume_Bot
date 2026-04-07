@@ -2,6 +2,7 @@ import streamlit as st
 from app.parser import extract_text
 from app.scraper import scrape_url, clean_pasted_text
 from app.vector_store import build_vector_store
+from app.rag import chat
 
 # ── Page config ───────────────────────────────────────────────
 st.set_page_config(
@@ -10,156 +11,182 @@ st.set_page_config(
     layout="centered"
 )
 
-# ── Header ────────────────────────────────────────────────────
 st.title("📄 Resume Bot")
-st.caption("Upload a document, paste a URL, or paste text directly to get started.")
+st.caption("Upload a document, paste a URL, or paste text directly — then ask questions.")
 
-st.divider()
-
-# ── Input mode selector ───────────────────────────────────────
-# st.radio renders a set of mutually exclusive options.
-# The user picks ONE input mode at a time.
-input_mode = st.radio(
-    label="How would you like to provide the information?",
-    options=["Upload a file", "Enter a URL", "Paste text"],
-    horizontal=True
-)
-
-st.divider()
-
-# ── Variables we'll populate depending on mode ────────────────
-raw_text = None       # will hold extracted text from any source
-source_label = None   # human-readable description of the source
-ready_to_submit = False
+# ── Helper: reset session for a fresh document ────────────────
+def reset_session():
+    for key in ["document_text", "document_name", "document_ready",
+                "faiss_index", "chunks", "chat_history"]:
+        st.session_state.pop(key, None)
+    # Incrementing this key forces Streamlit to recreate the file
+    # uploader widget from scratch, clearing the selected file.
+    st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
 
 # ══════════════════════════════════════════════════════════════
-# MODE 1: File upload
+# SECTION 1: Document input (always visible)
 # ══════════════════════════════════════════════════════════════
-if input_mode == "Upload a file":
-    uploaded_file = st.file_uploader(
-        label="Upload a PDF or DOCX file",
-        type=["pdf", "docx"],
-        help="Only PDF and DOCX formats are supported."
-    )
-    if uploaded_file is not None:
-        st.write(f"📎 Selected: **{uploaded_file.name}**")
-        st.caption("Confirm this is the correct file before clicking Analyse.")
-        ready_to_submit = True
-
-# ══════════════════════════════════════════════════════════════
-# MODE 2: URL input
-# ══════════════════════════════════════════════════════════════
-elif input_mode == "Enter a URL":
-
-    # Source type dropdown — helps us label the content correctly
-    # and in future phases could trigger source-specific handling
-    source_type = st.selectbox(
-        label="What type of link is this?",
-        options=[
-            "Portfolio website",
-            "GitHub profile",
-            "Personal blog",
-            "Company page",
-            "Other"
-        ]
-    )
-    url_input = st.text_input(
-        label="Enter the URL",
-        placeholder="https://example.com/about"
+with st.expander(
+    "📂 Document source" + (" ✅" if st.session_state.get("document_ready") else ""),
+    expanded=not st.session_state.get("document_ready", False)
+):
+    input_mode = st.radio(
+        "How would you like to provide the information?",
+        options=["Upload a file", "Enter a URL", "Paste text"],
+        horizontal=True
     )
 
-    # LinkedIn-specific warning shown proactively
-    if "linkedin.com" in url_input.lower():
-        st.warning(
-            "LinkedIn blocks automated access. "
-            "Please use the **Paste text** option and paste your profile text manually."
+    st.divider()
+
+    ready_to_submit = False
+
+    if input_mode == "Upload a file":
+        uploaded_file = st.file_uploader(
+            "Upload a PDF or DOCX file", type=["pdf", "docx"],
+            key=f"uploader_{st.session_state.get('uploader_key', 0)}"
         )
-        ready_to_submit = False
-    elif url_input.strip():
-        st.write(f"🔗 URL: **{url_input}**  |  Type: **{source_type}**")
-        ready_to_submit = True
+        if uploaded_file:
+            st.write(f"📎 Selected: **{uploaded_file.name}**")
+            ready_to_submit = True
+
+    elif input_mode == "Enter a URL":
+        source_type = st.selectbox(
+            "What type of link is this?",
+            ["Portfolio website", "GitHub profile", "Personal blog",
+             "Company page", "Other"]
+        )
+        url_input = st.text_input("Enter the URL", placeholder="https://example.com")
+        if "linkedin.com" in url_input.lower():
+            st.warning("LinkedIn blocks automated access. Use the Paste text option instead.")
+        elif url_input.strip():
+            st.write(f"🔗 **{url_input}** — {source_type}")
+            ready_to_submit = True
+
+    elif input_mode == "Paste text":
+        paste_type = st.selectbox(
+            "What is this text from?",
+            ["LinkedIn profile (copied manually)", "Resume / CV",
+             "Bio or about page", "Other"]
+        )
+        pasted_text = st.text_area("Paste your text here", height=200)
+        if pasted_text.strip():
+            st.caption(f"Word count: {len(pasted_text.split())}")
+            ready_to_submit = True
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        submit = st.button("Analyse Document", disabled=not ready_to_submit, type="primary")
+    with col2:
+        if st.session_state.get("document_ready"):
+            if st.button("🔄 Reset", help="Load a different document"):
+                reset_session()
+                st.rerun()
+
+    # ── Processing ────────────────────────────────────────────
+    if submit:
+        try:
+            with st.spinner("Reading document..."):
+                if input_mode == "Upload a file":
+                    raw_text = extract_text(uploaded_file)
+                    source_label = uploaded_file.name
+                elif input_mode == "Enter a URL":
+                    raw_text = scrape_url(url_input.strip())
+                    source_label = f"{source_type}: {url_input}"
+                elif input_mode == "Paste text":
+                    raw_text = clean_pasted_text(pasted_text)
+                    source_label = paste_type
+
+            with st.spinner("Building vector index..."):
+                index, chunks = build_vector_store(raw_text)
+
+            st.session_state.update({
+                "document_text": raw_text,
+                "document_name": source_label,
+                "document_ready": True,
+                "faiss_index": index,
+                "chunks": chunks,
+                "chat_history": [],   # fresh history for each new document
+            })
+            st.success(f"✅ Loaded: **{source_label}** — {len(chunks)} chunks indexed.")
+            st.rerun()  # collapse the expander and show the chat
+
+        except ValueError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"Something went wrong: {e}")
 
 # ══════════════════════════════════════════════════════════════
-# MODE 3: Paste text
+# SECTION 2: Chat interface (only shown when doc is ready)
 # ══════════════════════════════════════════════════════════════
-elif input_mode == "Paste text":
+if st.session_state.get("document_ready"):
 
-    paste_type = st.selectbox(
-        label="What is this text from?",
-        options=[
-            "LinkedIn profile (copied manually)",
-            "Resume / CV",
-            "Bio or about page",
-            "Other"
+    st.divider()
+    st.subheader(f"💬 Ask about: {st.session_state['document_name']}")
+
+    # Initialise chat history if somehow not set
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    # ── Render conversation history ───────────────────────────
+    # st.chat_message renders a styled bubble for each turn.
+    # We replay the whole history on every rerun.
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # ── Suggested starter questions ───────────────────────────
+    if not st.session_state["chat_history"]:
+        st.caption("Try asking:")
+        cols = st.columns(2)
+        starters = [
+            "What is this person's educational background?",
+            "What are their key technical skills?",
+            "Summarise their work experience.",
+            "What makes them stand out as a candidate?",
         ]
-    )
-    pasted_text = st.text_area(
-        label="Paste your text here",
-        height=250,
-        placeholder="Paste your resume, LinkedIn profile, bio, or any profile text here..."
-    )
-    if pasted_text.strip():
-        word_count = len(pasted_text.split())
-        st.caption(f"Word count: {word_count}")
-        ready_to_submit = True
+        for i, q in enumerate(starters):
+            if cols[i % 2].button(q, key=f"starter_{i}"):
+                # Treat a starter click exactly like a typed message
+                st.session_state["pending_question"] = q
+                st.rerun()
 
-# ══════════════════════════════════════════════════════════════
-# Shared submit button — disabled until input is ready
-# ══════════════════════════════════════════════════════════════
-st.divider()
-submit = st.button(
-    label="Analyse Document",
-    disabled=not ready_to_submit,
-    type="primary"
-)
+    # ── Handle pending question from starter buttons ──────────
+    if "pending_question" in st.session_state:
+        user_q = st.session_state.pop("pending_question")
+        with st.chat_message("user"):
+            st.markdown(user_q)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply, updated_history = chat(
+                    user_message=user_q,
+                    chat_history=st.session_state["chat_history"],
+                    faiss_index=st.session_state["faiss_index"],
+                    chunks=st.session_state["chunks"],
+                    source_name=st.session_state["document_name"],
+                )
+            st.markdown(reply)
+        st.session_state["chat_history"] = updated_history
+        st.rerun()
 
-# ══════════════════════════════════════════════════════════════
-# Processing — runs only on explicit submit click
-# ══════════════════════════════════════════════════════════════
-if submit:
-    try:
-        with st.spinner("Processing..."):
+    # ── Main chat input ───────────────────────────────────────
+    # st.chat_input renders the sticky input bar at the bottom.
+    # It returns the typed text when the user presses Enter.
+    user_input = st.chat_input("Ask a question about this document...")
 
-            if input_mode == "Upload a file":
-                raw_text = extract_text(uploaded_file)
-                source_label = uploaded_file.name
-
-            elif input_mode == "Enter a URL":
-                raw_text = scrape_url(url_input.strip())
-                source_label = f"{source_type}: {url_input}"
-
-            elif input_mode == "Paste text":
-                raw_text = clean_pasted_text(pasted_text)
-                source_label = paste_type
-
-        # Build the vector store from the extracted text
-        with st.spinner("Building vector index..."):
-            index, chunks = build_vector_store(raw_text)
-
-        # Store everything in session_state for use in later phases
-        st.session_state["document_text"] = raw_text
-        st.session_state["document_name"] = source_label
-        st.session_state["document_ready"] = True
-        st.session_state["faiss_index"] = index
-        st.session_state["chunks"] = chunks
-
-        st.success(f"✅ Ready! Source loaded: **{source_label}**")
-        st.caption(f"Document split into {len(chunks)} searchable chunks.")
-
-        # Debug preview — will be removed in a later phase
-        with st.expander("Preview extracted text (debug view)"):
-            preview = raw_text[:1000] + ("..." if len(raw_text) > 1000 else "")
-            st.text(preview)
-
-    except ValueError as e:
-        st.error(str(e))
-    except Exception as e:
-        st.error(f"Something went wrong: {e}")
-
-# ── Persistent ready state across reruns ─────────────────────
-elif st.session_state.get("document_ready"):
-    st.success(f"✅ Loaded: **{st.session_state['document_name']}**")
-    st.caption("Switch input mode and click Analyse again to load a different source.")
+    if user_input:
+        with st.chat_message("user"):
+            st.markdown(user_input)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply, updated_history = chat(
+                    user_message=user_input,
+                    chat_history=st.session_state["chat_history"],
+                    faiss_index=st.session_state["faiss_index"],
+                    chunks=st.session_state["chunks"],
+                    source_name=st.session_state["document_name"],
+                )
+            st.markdown(reply)
+        st.session_state["chat_history"] = updated_history
 
 else:
-    st.info("Choose an input method above and click Analyse to get started.")
+    st.info("Upload or link a document above to start chatting.")
