@@ -69,17 +69,26 @@ def test_check_query_too_short():
     assert "valid question" in msg
 
 
+def test_check_query_numbers_only():
+    passed, msg = check_query("12345", RESUME_TEXT)
+    assert passed is False
+
+
 def test_check_query_on_topic():
     passed, _ = check_query("What is his work experience?", RESUME_TEXT)
     assert passed is True
 
 
-def test_check_query_off_topic():
-    passed, msg = check_query(
-        "What is the capital of France?", RESUME_TEXT
-    )
-    assert passed is False
-    assert "only answer questions" in msg
+def test_check_query_abstract_question():
+    """Abstract phrasing should pass the guardrail — the LLM handles refusal."""
+    passed, _ = check_query("What makes them stand out as a candidate?", RESUME_TEXT)
+    assert passed is True
+
+
+def test_check_query_off_topic_passes_guardrail():
+    """Off-topic questions now pass the guardrail and are refused by the LLM instead."""
+    passed, _ = check_query("What is the capital of France?", RESUME_TEXT)
+    assert passed is True
 
 
 # ── chat() — mocking the Groq API ────────────────────────────
@@ -137,11 +146,15 @@ def test_chat_appends_history(vector_store):
     assert len(updated) == 4  # 2 existing + 2 new
 
 
-def test_chat_off_topic_blocked(vector_store):
-    """Off-topic questions should be blocked before reaching the LLM."""
+def test_chat_off_topic_reaches_llm(vector_store):
+    """Off-topic questions now pass the guardrail and are handled by the LLM."""
     index, chunks = vector_store
+    mock_response = make_mock_groq_response(
+        "I can only answer questions about the information in this document."
+    )
 
     with patch("app.rag.get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = mock_response
         reply, _ = chat(
             user_message="What is the boiling point of water?",
             chat_history=[],
@@ -149,7 +162,7 @@ def test_chat_off_topic_blocked(vector_store):
             chunks=chunks,
             source_name="test_resume.pdf",
         )
-        # The LLM should never have been called
-        mock_get_client.return_value.chat.completions.create.assert_not_called()
+        # LLM should now be called — it decides how to respond
+        mock_get_client.return_value.chat.completions.create.assert_called_once()
 
-    assert "only answer questions" in reply.lower() or "not" in reply.lower()
+    assert isinstance(reply, str)
