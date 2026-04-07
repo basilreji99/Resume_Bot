@@ -6,9 +6,25 @@ from app.guardrails import check_query
 
 load_dotenv()  # reads your .env file and loads GROQ_API_KEY into os.environ
 
-# Initialise the Groq client once at module level.
-# It automatically reads GROQ_API_KEY from the environment.
-_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+# _client is intentionally None at import time.
+# We initialise it lazily on the first real API call so that
+# importing this module never fails — even in test environments
+# where no API key is present. Tests mock _client directly,
+# so they never trigger get_client().
+_client = None
+
+def get_client() -> Groq:
+    """Returns the shared Groq client, creating it on first call."""
+    global _client
+    if _client is None:
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY is not set. "
+                "Add it to your .env file or environment variables."
+            )
+        _client = Groq(api_key=api_key)
+    return _client
 
 # The model we're using. llama-3.3-70b-versatile is Groq's best
 # free model as of 2026 — highly capable and very fast.
@@ -103,7 +119,7 @@ def chat(
     )
 
     # Step 5: Call the Groq API
-    response = _client.chat.completions.create(
+    response = get_client().chat.completions.create(
         model=MODEL,
         messages=messages,
         temperature=0.2,     # low temperature = more factual, less creative

@@ -1,6 +1,9 @@
 import streamlit as st
+from dotenv import load_dotenv
+load_dotenv()
+
 from app.parser import extract_text
-from app.scraper import scrape_url, clean_pasted_text
+from app.scraper import clean_pasted_text
 from app.vector_store import build_vector_store
 from app.rag import chat
 
@@ -32,7 +35,7 @@ with st.expander(
 ):
     input_mode = st.radio(
         "How would you like to provide the information?",
-        options=["Upload a file", "Enter a URL", "Paste text"],
+        options=["Upload a file", "Paste text"],
         horizontal=True
     )
 
@@ -49,26 +52,20 @@ with st.expander(
             st.write(f"📎 Selected: **{uploaded_file.name}**")
             ready_to_submit = True
 
-    elif input_mode == "Enter a URL":
-        source_type = st.selectbox(
-            "What type of link is this?",
-            ["Portfolio website", "GitHub profile", "Personal blog",
-             "Company page", "Other"]
-        )
-        url_input = st.text_input("Enter the URL", placeholder="https://example.com")
-        if "linkedin.com" in url_input.lower():
-            st.warning("LinkedIn blocks automated access. Use the Paste text option instead.")
-        elif url_input.strip():
-            st.write(f"🔗 **{url_input}** — {source_type}")
-            ready_to_submit = True
-
     elif input_mode == "Paste text":
         paste_type = st.selectbox(
             "What is this text from?",
             ["LinkedIn profile (copied manually)", "Resume / CV",
-             "Bio or about page", "Other"]
+             "Bio or about page", "GitHub bio", "Other"]
         )
-        pasted_text = st.text_area("Paste your text here", height=200)
+        pasted_text = st.text_area(
+            "Paste your text here",
+            height=200,
+            placeholder=(
+                "Paste any profile text here — LinkedIn About section, "
+                "resume content, website bio, GitHub profile, or a mix of these."
+            )
+        )
         if pasted_text.strip():
             st.caption(f"Word count: {len(pasted_text.split())}")
             ready_to_submit = True
@@ -89,9 +86,6 @@ with st.expander(
                 if input_mode == "Upload a file":
                     raw_text = extract_text(uploaded_file)
                     source_label = uploaded_file.name
-                elif input_mode == "Enter a URL":
-                    raw_text = scrape_url(url_input.strip())
-                    source_label = f"{source_type}: {url_input}"
                 elif input_mode == "Paste text":
                     raw_text = clean_pasted_text(pasted_text)
                     source_label = paste_type

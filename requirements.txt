@@ -7,3 +7,6 @@ sentence-transformers
 faiss-cpu
 numpy
 groq
+pytest
+pytest-mock
+

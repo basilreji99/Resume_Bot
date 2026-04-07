@@ -2,6 +2,11 @@ import pytest
 from unittest.mock import patch
 from app.scraper import scrape_url, clean_pasted_text, is_blocked, get_domain
 
+# Note: scrape_url is kept in scraper.py as a utility but is no longer
+# exposed in the UI — most portfolio/GitHub sites are JS-rendered and
+# return empty content. These tests verify the utility still works
+# correctly in case it's re-enabled later.
+
 
 # ── Domain helpers ────────────────────────────────────────────
 def test_get_domain_strips_www():

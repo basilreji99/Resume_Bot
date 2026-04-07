@@ -33,31 +33,44 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def is_query_relevant(
     query: str,
     document_text: str,
-    threshold: float = 0.25
+    threshold: float = 0.15
 ) -> tuple[bool, float]:
     """
     Checks whether a user question is semantically related to the document.
 
-    Strategy: embed the query AND a sample of the document text, then
-    compare them with cosine similarity. If the score is below the
-    threshold, the question is probably off-topic.
+    Strategy: embed the query and compare it against SEVERAL short samples
+    from the document (beginning, middle, end), then take the MAXIMUM score.
+    This works better than comparing against the whole document because:
+    - A question is short and stylistically different from a long document
+    - Averaging the whole document into one vector dilutes specific topics
+    - Taking the max score across samples catches questions about any section
 
-    We use only the first 1000 words of the document as the comparison
-    target — the intro/summary section is the richest in terms of topics
-    and is fastest to embed. For a resume this is more than enough.
+    Threshold 0.15 is intentionally lenient — the system prompt already
+    instructs the LLM to refuse off-topic questions. This layer only blocks
+    clearly unrelated queries (weather, maths, general trivia etc.)
 
     Returns:
-        (is_relevant: bool, score: float)
-        The score is returned so it can be logged or shown in debug mode.
+        (is_relevant: bool, score: float) — score is the best match found.
     """
-    # Take a representative sample to keep embedding fast
-    doc_sample = " ".join(document_text.split()[:1000])
+    words = document_text.split()
+    total = len(words)
+
+    # Sample up to 3 sections: start, middle, end (each 300 words)
+    # For short documents some samples will overlap — that's fine
+    sample_size = 300
+    starts = [0, max(0, total // 2 - sample_size // 2), max(0, total - sample_size)]
+    samples = [" ".join(words[s: s + sample_size]) for s in starts]
+    # Deduplicate in case of short documents
+    samples = list(dict.fromkeys(samples))
 
     query_vec = _model.encode([query], convert_to_numpy=True)
-    doc_vec = _model.encode([doc_sample], convert_to_numpy=True)
+    doc_vecs = _model.encode(samples, convert_to_numpy=True)
 
-    score = cosine_similarity(query_vec, doc_vec)
-    return score >= threshold, score
+    # Take the best (maximum) similarity score across all samples
+    scores = [cosine_similarity(query_vec, doc_vecs[i:i+1]) for i in range(len(samples))]
+    best_score = max(scores)
+
+    return best_score >= threshold, best_score
 
 
 def check_query(query: str, document_text: str) -> tuple[bool, str]:

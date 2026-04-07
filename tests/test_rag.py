@@ -54,7 +54,8 @@ def test_relevant_query_passes():
 
 
 def test_irrelevant_query_fails():
-    """A clearly off-topic question should be flagged as irrelevant."""
+    """A clearly off-topic question should be flagged as irrelevant.
+    We use a question with zero connection to a software resume."""
     relevant, score = is_query_relevant(
         "What is the boiling point of water in Kelvin?", RESUME_TEXT
     )
@@ -98,8 +99,8 @@ def test_chat_returns_reply(vector_store):
     index, chunks = vector_store
     mock_response = make_mock_groq_response("Basil Ahmed is a software engineer.")
 
-    with patch("app.rag._client") as mock_client:
-        mock_client.chat.completions.create.return_value = mock_response
+    with patch("app.rag.get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = mock_response
         reply, history = chat(
             user_message="What is his name?",
             chat_history=[],
@@ -123,8 +124,8 @@ def test_chat_appends_history(vector_store):
         {"role": "assistant", "content": "His name is Basil Ahmed."}
     ]
 
-    with patch("app.rag._client") as mock_client:
-        mock_client.chat.completions.create.return_value = mock_response
+    with patch("app.rag.get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = mock_response
         _, updated = chat(
             user_message="Where did he work?",
             chat_history=history,
@@ -140,7 +141,7 @@ def test_chat_off_topic_blocked(vector_store):
     """Off-topic questions should be blocked before reaching the LLM."""
     index, chunks = vector_store
 
-    with patch("app.rag._client") as mock_client:
+    with patch("app.rag.get_client") as mock_get_client:
         reply, _ = chat(
             user_message="What is the boiling point of water?",
             chat_history=[],
@@ -149,6 +150,6 @@ def test_chat_off_topic_blocked(vector_store):
             source_name="test_resume.pdf",
         )
         # The LLM should never have been called
-        mock_client.chat.completions.create.assert_not_called()
+        mock_get_client.return_value.chat.completions.create.assert_not_called()
 
     assert "only answer questions" in reply.lower() or "not" in reply.lower()
