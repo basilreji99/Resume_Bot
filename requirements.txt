@@ -9,4 +9,5 @@ numpy
 groq
 pytest
 pytest-mock
-
+fastapi
+uvicorn
