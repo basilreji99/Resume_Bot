@@ -85,7 +85,10 @@ with st.expander(
             with st.spinner("Reading document..."):
                 if input_mode == "Upload a file":
                     raw_text = extract_text(uploaded_file)
-                    source_label = uploaded_file.name
+                    # Strip file extension for cleaner display
+                    # e.g. "Basil Reji.pdf" → "Basil Reji"
+                    name = uploaded_file.name
+                    source_label = name.rsplit(".", 1)[0] if "." in name else name
                 elif input_mode == "Paste text":
                     raw_text = clean_pasted_text(pasted_text)
                     source_label = paste_type

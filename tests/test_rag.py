@@ -1,18 +1,18 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from app.vector_store import build_vector_store
-from app.guardrails import cosine_similarity, is_query_relevant, check_query
-from app.rag import chat
+from app.guardrails import cosine_similarity, check_query
+from app.rag import chat, _extract_greeting_and_question, _rewrite_query
 import numpy as np
 
 
 # ── Shared fixture ────────────────────────────────────────────
 RESUME_TEXT = (
-    "Basil Ahmed is a software engineer based in Boston. "
-    "He has 5 years of experience in Python and machine learning. "
-    "He worked at Acme Corp as a data engineer from 2019 to 2022. "
-    "He holds a Masters degree in Computer Science from MIT. "
-    "His skills include Python, SQL, TensorFlow, and AWS."
+    "Jane Smith is a software engineer based in New York. "
+    "She has 5 years of experience in Python and machine learning. "
+    "She worked at Acme Corp as a data engineer from 2019 to 2022. "
+    "She holds a Masters degree in Computer Science from MIT. "
+    "Her skills include Python, SQL, TensorFlow, and AWS."
 )
 
 @pytest.fixture(scope="module")
@@ -22,102 +22,135 @@ def vector_store():
 
 # ── cosine_similarity ─────────────────────────────────────────
 def test_cosine_similarity_identical():
-    """A vector compared to itself should score 1.0."""
     v = np.array([[1.0, 0.5, -0.3]])
-    score = cosine_similarity(v, v)
-    assert abs(score - 1.0) < 1e-5
-
+    assert abs(cosine_similarity(v, v) - 1.0) < 1e-5
 
 def test_cosine_similarity_orthogonal():
-    """Perpendicular vectors should score 0.0."""
     a = np.array([[1.0, 0.0]])
     b = np.array([[0.0, 1.0]])
-    score = cosine_similarity(a, b)
-    assert abs(score) < 1e-5
-
+    assert abs(cosine_similarity(a, b)) < 1e-5
 
 def test_cosine_similarity_zero_vector():
-    """Zero vector should not cause a crash — returns 0.0."""
     a = np.array([[0.0, 0.0]])
     b = np.array([[1.0, 0.5]])
-    score = cosine_similarity(a, b)
-    assert score == 0.0
-
-
-# ── is_query_relevant ─────────────────────────────────────────
-def test_relevant_query_passes():
-    """A question about the resume should be flagged as relevant."""
-    relevant, score = is_query_relevant(
-        "What programming languages does he know?", RESUME_TEXT
-    )
-    assert relevant is True, f"Expected relevant but got score {score:.3f}"
-
-
-def test_irrelevant_query_fails():
-    """A clearly off-topic question should be flagged as irrelevant.
-    We use a question with zero connection to a software resume."""
-    relevant, score = is_query_relevant(
-        "What is the boiling point of water in Kelvin?", RESUME_TEXT
-    )
-    assert relevant is False, f"Expected irrelevant but got score {score:.3f}"
+    assert cosine_similarity(a, b) == 0.0
 
 
 # ── check_query ───────────────────────────────────────────────
-def test_check_query_too_short():
-    passed, msg = check_query("hi", RESUME_TEXT)
+def test_check_query_empty():
+    passed, msg = check_query("", RESUME_TEXT)
     assert passed is False
     assert "valid question" in msg
 
-
-def test_check_query_numbers_only():
-    passed, msg = check_query("12345", RESUME_TEXT)
+def test_check_query_single_char():
+    passed, _ = check_query("a", RESUME_TEXT)
     assert passed is False
 
-
-def test_check_query_on_topic():
-    passed, _ = check_query("What is his work experience?", RESUME_TEXT)
+def test_check_query_hi_passes():
+    """'Hi' is 2 chars and must pass — greeting handler deals with it."""
+    passed, _ = check_query("Hi", RESUME_TEXT)
     assert passed is True
 
+def test_check_query_numbers_only():
+    passed, _ = check_query("12345", RESUME_TEXT)
+    assert passed is False
+
+def test_check_query_normal_question():
+    passed, _ = check_query("What is her work experience?", RESUME_TEXT)
+    assert passed is True
 
 def test_check_query_abstract_question():
-    """Abstract phrasing should pass the guardrail — the LLM handles refusal."""
-    passed, _ = check_query("What makes them stand out as a candidate?", RESUME_TEXT)
+    """Abstract phrasing must pass — the LLM handles refusal."""
+    passed, _ = check_query("What makes her stand out as a candidate?", RESUME_TEXT)
     assert passed is True
 
 
-def test_check_query_off_topic_passes_guardrail():
-    """Off-topic questions now pass the guardrail and are refused by the LLM instead."""
-    passed, _ = check_query("What is the capital of France?", RESUME_TEXT)
-    assert passed is True
+# ── Greeting detection ────────────────────────────────────────
+def test_greeting_only():
+    greeting, question = _extract_greeting_and_question("Hi!")
+    assert greeting is not None
+    assert question is None
+
+def test_greeting_with_question():
+    greeting, question = _extract_greeting_and_question("Hello! What are her skills?")
+    assert greeting is not None
+    assert question is not None
+    assert "skills" in question.lower()
+
+def test_no_greeting_just_question():
+    greeting, question = _extract_greeting_and_question("What is her education background?")
+    assert greeting is None
+
+def test_how_are_you():
+    greeting, question = _extract_greeting_and_question("How are you?")
+    assert greeting is not None
+    assert "doing well" in greeting.lower() or "ready" in greeting.lower()
 
 
-# ── chat() — mocking the Groq API ────────────────────────────
-# We don't want to make real API calls in tests — they cost money,
-# require a key, and are slow. We mock the Groq client so that
-# any call to it returns a fake but realistic response object.
+# ── Query rewriter ────────────────────────────────────────────
+def test_rewrite_skips_specific_question():
+    """Specific questions should not be rewritten."""
+    result = _rewrite_query("What university did she attend?", [])
+    assert result == "What university did she attend?"
 
-def make_mock_groq_response(content: str):
-    """Helper to build a fake Groq API response object."""
-    mock_resp = MagicMock()
-    mock_resp.choices[0].message.content = content
-    return mock_resp
+def test_rewrite_skips_without_history():
+    """No history means nothing to rewrite from."""
+    result = _rewrite_query("tell me more", [])
+    assert result == "tell me more"
 
-
-def test_chat_returns_reply(vector_store):
-    """chat() should return a string reply and updated history."""
-    index, chunks = vector_store
-    mock_response = make_mock_groq_response("Basil Ahmed is a software engineer.")
+def test_rewrite_triggers_for_vague_followup():
+    """Vague follow-up with history should trigger rewrite via LLM."""
+    history = [
+        {"role": "user", "content": "What is her education?"},
+        {"role": "assistant", "content": "She holds a Masters from MIT."}
+    ]
+    mock_response = MagicMock()
+    mock_response.choices[0].message.content = "What additional details exist about her education at MIT?"
 
     with patch("app.rag.get_client") as mock_get_client:
         mock_get_client.return_value.chat.completions.create.return_value = mock_response
+        result = _rewrite_query("can you elaborate?", history)
+
+    assert result != "can you elaborate?"
+    assert len(result) > 10
+
+
+# ── chat() ────────────────────────────────────────────────────
+def make_mock_response(content: str):
+    mock = MagicMock()
+    mock.choices[0].message.content = content
+    return mock
+
+
+def test_chat_greeting_returns_without_llm_call(vector_store):
+    """Pure greetings should not call the LLM at all."""
+    index, chunks = vector_store
+    with patch("app.rag.get_client") as mock_get_client:
         reply, history = chat(
-            user_message="What is his name?",
+            user_message="Hi",
             chat_history=[],
             faiss_index=index,
             chunks=chunks,
             source_name="test_resume.pdf",
         )
+        mock_get_client.return_value.chat.completions.create.assert_not_called()
+    assert isinstance(reply, str)
+    assert len(reply) > 0
 
+
+def test_chat_returns_reply(vector_store):
+    """Normal question should return a string reply."""
+    index, chunks = vector_store
+    with patch("app.rag.get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = \
+            make_mock_response("Jane Smith is a software engineer.")
+        reply, history = chat(
+            user_message="What is her name?",
+            chat_history=[],
+            faiss_index=index,
+            chunks=chunks,
+            source_name="test_resume.pdf",
+        )
     assert isinstance(reply, str)
     assert len(reply) > 0
     assert history[-1]["role"] == "assistant"
@@ -125,44 +158,54 @@ def test_chat_returns_reply(vector_store):
 
 
 def test_chat_appends_history(vector_store):
-    """Each chat() call should add exactly 2 items to history."""
+    """Each chat() call adds exactly 2 items to history."""
     index, chunks = vector_store
-    mock_response = make_mock_groq_response("He worked at Acme Corp.")
     history = [
-        {"role": "user", "content": "What is his name?"},
-        {"role": "assistant", "content": "His name is Basil Ahmed."}
+        {"role": "user", "content": "What is her name?"},
+        {"role": "assistant", "content": "Her name is Jane Smith."}
     ]
-
     with patch("app.rag.get_client") as mock_get_client:
-        mock_get_client.return_value.chat.completions.create.return_value = mock_response
+        mock_get_client.return_value.chat.completions.create.return_value = \
+            make_mock_response("She worked at Acme Corp.")
         _, updated = chat(
-            user_message="Where did he work?",
+            user_message="Where did she work?",
             chat_history=history,
             faiss_index=index,
             chunks=chunks,
             source_name="test_resume.pdf",
         )
+    assert len(updated) == 4
 
-    assert len(updated) == 4  # 2 existing + 2 new
 
-
-def test_chat_off_topic_reaches_llm(vector_store):
-    """Off-topic questions now pass the guardrail and are handled by the LLM."""
+def test_chat_rate_limit_returns_friendly_message(vector_store):
+    """Groq RateLimitError should return a friendly message, not crash."""
+    from groq import RateLimitError
     index, chunks = vector_store
-    mock_response = make_mock_groq_response(
-        "I can only answer questions about the information in this document."
-    )
-
     with patch("app.rag.get_client") as mock_get_client:
-        mock_get_client.return_value.chat.completions.create.return_value = mock_response
+        mock_get_client.return_value.chat.completions.create.side_effect = \
+            RateLimitError("rate limit", response=MagicMock(status_code=429), body={})
         reply, _ = chat(
-            user_message="What is the boiling point of water?",
+            user_message="What are her skills?",
             chat_history=[],
             faiss_index=index,
             chunks=chunks,
             source_name="test_resume.pdf",
         )
-        # LLM should now be called — it decides how to respond
-        mock_get_client.return_value.chat.completions.create.assert_called_once()
+    assert "wait" in reply.lower() or "try again" in reply.lower()
 
+
+def test_chat_off_topic_reaches_llm(vector_store):
+    """Off-topic questions pass the guardrail and are handled by the LLM."""
+    index, chunks = vector_store
+    with patch("app.rag.get_client") as mock_get_client:
+        mock_get_client.return_value.chat.completions.create.return_value = \
+            make_mock_response("I can only answer questions about the uploaded document.")
+        reply, _ = chat(
+            user_message="What is the capital of France?",
+            chat_history=[],
+            faiss_index=index,
+            chunks=chunks,
+            source_name="test_resume.pdf",
+        )
+        mock_get_client.return_value.chat.completions.create.assert_called_once()
     assert isinstance(reply, str)
